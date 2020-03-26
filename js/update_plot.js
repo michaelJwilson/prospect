@@ -33,11 +33,11 @@ if (cb_obj == ifiberslider) { // update VI widgets + infos for current spectrum
         zcat_disp_cds.data['DeltaChi2'] = [ targetinfo.data['deltachi2'][ifiber].toFixed(1) ]
         zcat_disp_cds.change.emit()
     }
-
-    if(modelinfo.data['0THZ'] != undefined) {	
-	var nth = nmodel_slider.value
-
-	zzcat_disp_cds.data['NTHSPECTYPE'] = [ modelinfo.data[nth + 'THSPECTYPE'][ifiber] ]
+    
+    if(modelinfo != undefined) {	
+    	var nth = nmodel_slider.value
+     
+    	zzcat_disp_cds.data['NTHSPECTYPE'] = [ modelinfo.data[nth + 'THSPECTYPE'][ifiber] ]
         zzcat_disp_cds.data['NTHZ'] = [ modelinfo.data[nth + 'THZ'][ifiber] ]
         zzcat_disp_cds.data['NTHZERR'] = [ modelinfo.data[nth + 'THZERR'][ifiber] ]
         zzcat_disp_cds.data['NTHZWARN'] = [ modelinfo.data[nth + 'THZWARN'][ifiber] ]

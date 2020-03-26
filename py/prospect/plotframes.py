@@ -481,11 +481,14 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
           
           models.append(mflux)
 
+          if nth == 0:
+            base_chisq = zzin['CHI2'] 
+          
           models_info['{:d}THSPECTYPE'.format(nth)]  = np.array(zzin['SPECTYPE'])
           models_info['{:d}THZ'.format(nth)]         = ['{:.4f}'.format(x) for x in np.array(zzin['Z'])]
           models_info['{:d}THZERR'.format(nth)]      = ['{:.4f}'.format(x) for x in np.array(zzin['ZERR'])]
           models_info['{:d}THZWARN'.format(nth)]     = ['{:d}'.format(x) for x in np.array(zzin['ZWARN'])]
-          models_info['{:d}THDELTACHI2'.format(nth)] = ['{:.1f}'.format(x) for x in np.array(zzin['DELTACHI2'])]
+          models_info['{:d}THDELTACHI2'.format(nth)] = ['{:.1f}'.format(x) for x in np.array(zzin['CHI2'] - base_chisq)]
   
         cds_model       = make_cds_model((mwave, models))
         cds_models_info = bk.ColumnDataSource(models_info)
@@ -494,12 +497,14 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
         if model is not None:
           mwave, mflux = model  
             
-          cds_model    = make_cds_model((mwave, [mflux]))
-          models_info  = None
+          cds_model       = make_cds_model((mwave, [mflux]))
+          models_info     = None
+          cds_models_info = None
           
         else:
-          cds_model    = None        
-          models_info  = None
+          cds_model       = None        
+          models_info     = None
+          cds_models_info = None
           
     if notebook and ("USER" in os.environ) : 
         username = os.environ['USER']
@@ -719,7 +724,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
     #- Redshift / wavelength scale widgets
     z1 = np.floor(z*100)/100
     dz = z-z1
-    nmodel_slider = Slider(start=0, end=NBESTFIT, value=0, step=1, title=r'redrock model')
+    nmodel_slider = Slider(start=0, end=NBESTFIT-1, value=0, step=1, title=r'redrock model')
     zslider = Slider(start=0.0, end=4.0, value=z1, step=0.01, title='Redshift rough tuning')
     dzslider = Slider(start=-0.01, end=0.01, value=dz, step=0.0001, title='Redshift fine-tuning')
     dzslider.format = "0[.]0000"
@@ -775,9 +780,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
         var z = zslider.value + dzslider.value
                                                                                                                                       
         zdisp_cds.data['z_disp']=[ z.toFixed(4) ]                                                                                                                                                                                   
-        zdisp_cds.change.emit()                                                                                                                                                                                                                          
-        smootherslider.value=0
-                                                                                                                                                                                                             
+        zdisp_cds.change.emit()                                                                                                                                                                                                                                                                                                                                                                                                                                       
         var line_restwave = line_data.data['restwave']                                                                                                                                                                              
         var ifiber = ifiberslider.value                                                                                                                                                                                             
         var zfit = 0.0                                                                                                                                                                                                              
@@ -794,27 +797,80 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
             zline_labels[i].x = line_restwave[i] * waveshift_lines                                                                                                                                                                 
         }                                                                                                                                                                                                                           
 
-        function shift_plotwave(cds_spec, waveshift) {                                                                                                                                                                                 
-            var data = cds_spec.data                                                                                                                                                                                                   
-            var origwave = data['origwave']                                                                                                                                                                                            
+        function shift_plotwave(cds_spec, waveshift) {                                                                                                                                                                                
+            var data = cds_spec.data                                                                                                                                                                                                  
+            var origwave = data['origwave']                                                                                                                                                                                           
             var plotwave = data['plotwave']                                                                                                                                                                                            
-            if ( plotwave[0] != origwave[0] * waveshift ) { // Avoid redo calculation if not needed                                                                                                                                    
-                for (var j=0; j<plotwave.length; j++) {                                                                                                                                                                                
-                    plotwave[j] = origwave[j] * waveshift ;                                                                                                                                                                            
+            if ( plotwave[0] != origwave[0] * waveshift ) { // Avoid redo calculation if not needed                                                                                                                                   
+                for (var j=0; j<plotwave.length; j++) {                                                                                                                                                                               
+                    plotwave[j] = origwave[j] * waveshift ;                                                                                                                                                                           
                 }                                                                                                                                                                                                                      
-                cds_spec.change.emit()                                                                                                                                                                                                 
-            }                                                                                                                                                                                                                          
+                cds_spec.change.emit()                                                                                                                                                                                                
+            }                                                                                                                                                                                                                         
         }  
 
+       // Smoothing kernel                                                                                                                                                                                                                   //  smootherslider.value=0  
+       var nsmooth = smootherslider.value
+ 
+       if (nsmooth > 0) {
+           var kernel = [];
+           for(var i=-2*nsmooth; i<=2*nsmooth; i++) {
+               kernel.push(Math.exp(-(i**2)/(2*nsmooth)))
+           }
+           var kernel_offset = Math.floor(kernel.length/2)
+       }
+
+       function smooth_data(data_in, kernel, kernel_offset, quadrature=false) {
+           // by default : out_j ~ (sum K_i in_i) / (sum K_i)                                                                                                                                                                        
+           // if quadrature is true (for noise) : out_j^2 ~ (sum K_i^2 in_i^2) / (sum K_i)^2                                                                                                                                         
+
+           var smoothed_data = data_in.slice()
+           for (var j=0; j<data_in.length; j++) {
+               smoothed_data[j] = 0.0
+               var weight = 0.0
+               // TODO: speed could be improved by moving `if` out of loop                                                                                                                                                           
+               for (var k=0; k<kernel.length; k++) {
+                    var m = j+k-kernel_offset
+          
+                    if((m >= 0) && (m < data_in.length)) {
+                      var fx = data_in[m]
+                
+                      if(fx == fx) {
+                        if (quadrature==true) {
+                          smoothed_data[j] = smoothed_data[j] + (fx * kernel[k])**2
+                        } 
+                        else {
+                          smoothed_data[j] = smoothed_data[j] + fx * kernel[k]
+                        }
+ 
+                        weight += kernel[k]
+                      }
+                    }
+               }
+ 
+               if (quadrature==true) {
+                  smoothed_data[j] = Math.sqrt(smoothed_data[j]) / weight
+               }
+  
+               else {
+                  smoothed_data[j] = smoothed_data[j] / weight
+               }
+            } 
+
+            return smoothed_data
+        }
+ 
         function switch_model(nth, ifiber, cds_spec, waveshift) {                                                                                                                                                                    
             var data        = cds_spec.data                                                                                                                                                                                           
                                                                                                                                                                                                                                      
             var  col        = nth + "BESTFIT" + ifiber                                                                                                                                                                                                                                                                                                                                                                                                                 
             var plotwave    = data['plotwave']                                                                                                                                                                                        
             var plotflux    = data['plotflux']                                                                                                                                                                                                                                                                                                                                                                                                                              
-            var newflux     = data[col]                                                                                                                                                                                                                                                                                                                                                                                                                      
+            var newflux     = data[col]                                                                                                                                                                                                                             
+            var snewflux    = smooth_data(newflux, kernel, kernel_offset)
+                                                                                                                                                                                         
             for (var j=0; j<plotwave.length; j++) {                                                                                                                                                                                 
-              plotflux[j]   = newflux[j];                                                                                                                                                                                      
+              plotflux[j]   = snewflux[j];                                                                                                                                                                                      
             }                                                                                                                                                                                                                                                                                                                                                                                                                                                               
             cds_spec.change.emit()                                                                                                                                                                                                            } 
 
