@@ -14,6 +14,7 @@ import argparse
 
 import numpy as np
 import scipy.ndimage.filters
+import pandas as pd
 
 from astropy.table import Table
 import astropy.io.fits
@@ -39,6 +40,7 @@ import desispec.frame
 from prospect import utils_specviewer
 from prospect import mycoaddcam
 from astropy.table import Table
+from redrock.results import read_zscan
 
 def create_model(spectra, zbest, archetype_fit=True, archetypes_dir=None):
     '''
@@ -75,6 +77,7 @@ def create_model(spectra, zbest, archetype_fit=True, archetypes_dir=None):
         model_flux[band] = np.zeros(spectra.flux[band].shape)
 
     targetids = spectra.target_ids()
+
     for i in range(len(zbest)):
         zb = zbest[i]
         j = np.where(targetids == zb['TARGETID'])[0][0]
@@ -131,7 +134,7 @@ def create_model(spectra, zbest, archetype_fit=True, archetypes_dir=None):
         model_flux['z'][:, keep['z']],
       ], axis=1 )
 
-      return model_wave, mflux
+      return  model_wave, mflux
   
 
 def _viewer_urls(spectra, zoom=13, layer='dr8'):
@@ -196,22 +199,45 @@ def make_cds_coaddcam_spec(spectra, with_noise) :
     
     return cds_coaddcam_spec
 
-def make_cds_model(model) :
+def make_cds_model(models) :
     """ Creates column data source for model spectrum """
+    import itertools
+
     
-    mwave, mflux = model
-    cds_model_data = dict(
-        origwave = mwave.copy(),
-        plotwave = mwave.copy(),
-        plotflux = np.zeros(len(mwave)),
-    )
-    for i in range(len(mflux)):
-        key = 'origflux'+str(i)
-        cds_model_data[key] = mflux[i]
+    mwave, models  = models
 
-    cds_model_data['plotflux'] = cds_model_data['origflux0']
-    cds_model = bk.ColumnDataSource(cds_model_data)
+    nsource        = models[0].shape[0]
+    nwave          = models[0].shape[1]
 
+    nfits          = len(models)
+    
+    indices        = ['{}'.format(x) for x in range(len(models[0]))]
+    fits           = ['{}BESTFIT'.format(x) for x in range(nfits)]
+        
+    names          = list(itertools.product(fits, indices))
+
+    names          = [x[0] + x[1] for x in names]
+
+    d              = np.zeros((nwave, nfits * nsource))
+    
+    df             = pd.DataFrame(d, columns=names)
+    
+    df['origwave'] = mwave.copy()
+    df['plotwave'] = mwave.copy()
+    df['plotflux'] = np.zeros_like(mwave)
+    
+    for nth in range(nfits):
+      for i in range(len(models[0])):
+        key        = '{}BESTFIT'.format(nth) + str(i)
+        df[key]    = models[nth][i]
+
+    df['plotflux'] = df['0BESTFIT0']
+
+    # print(nsource, nfits, nwave)
+    # print(df)
+    
+    cds_model      = bk.ColumnDataSource(df)
+    
     return cds_model
 
 def make_cds_targetinfo(spectra, zcatalog, is_coadded, mask_type, username=" ") :
@@ -346,7 +372,9 @@ def grid_thumbs(spectra, thumb_width, x_range=(3400,10000), thumb_height=None, r
     return gridplot(thumb_plots, ncols=ncols_grid, toolbar_location=None, sizing_mode='scale_width')
 
 
-def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_zcat=True, model=None, notebook=False, vidata=None, is_coadded=True, title=None, html_dir=None, with_imaging=True, with_noise=True, with_coaddcam=True, mask_type='DESI_TARGET', with_thumb_tab=True, with_vi_widgets=True, with_thumb_only_page=False, archetype_fit=False, archetypes_dir=None):
+def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_zcat=True, model=None, notebook=False, vidata=None, is_coadded=True,\
+                title=None, html_dir=None, with_imaging=True, with_noise=True, with_coaddcam=True, mask_type='DESI_TARGET', with_thumb_tab=True,\
+                with_vi_widgets=True, with_thumb_only_page=False, archetype_fit=False, archetypes_dir=None, rrh5=None, NBESTFIT=5):
     '''
     Main prospect routine, creates a bokeh document from a set of spectra and fits
 
@@ -375,7 +403,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
     archetype_fit : if True, assume zbest derived from redrock --archetypes and plot model accordingly.
     archetypes_dir : directory path for archetypes if not $RR__ARCHETYPE_DIR.
     '''
-
+    
     #- If inputs are frames, convert to a spectra object
     if isinstance(spectra, list) and isinstance(spectra[0], desispec.frame.Frame):
         spectra = utils_specviewer.frames2spectra(spectra, nspec=nspec, startspec=startspec)
@@ -409,7 +437,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
 
         if model_from_zcat == True :
             model = create_model(spectra, zcatalog, archetype_fit=archetype_fit, archetypes_dir=archetypes_dir)
-
+                      
     #-----
     #- Initialize Bokeh output
     if notebook:
@@ -427,10 +455,52 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
         cds_coaddcam_spec = make_cds_coaddcam_spec(spectra, with_noise)
     else :
         cds_coaddcam_spec = None
-    if model is not None:
-        cds_model = make_cds_model(model)
+        
+    if rrh5 is not None:
+        (zscan, zfit)  = rrh5
+        
+        cols           = list(zfit.columns)
+
+        for col in cols:
+          zfit.rename_column(col, col.upper())
+
+        models         = []  
+        models_info    = {}
+        
+        ##  zbest for nth [0-NBESTFIT] best-fitting redshift of each target.
+        for nth in range(NBESTFIT):
+          zz           = zfit[zfit['ZNUM'] == nth]
+            
+          # Assume consistent row order.
+          isin         = np.isin(zz['TARGETID'], zcatalog['TARGETID'])
+          zzin         = zz[isin]
+
+          assert  np.all(zzin['TARGETID'] == zcatalog['TARGETID'])
+          
+          mwave, mflux = create_model(spectra, zzin, archetype_fit=archetype_fit, archetypes_dir=archetypes_dir)
+          
+          models.append(mflux)
+
+          models_info['{:d}THSPECTYPE'.format(nth)]  = np.array(zzin['SPECTYPE'])
+          models_info['{:d}THZ'.format(nth)]         = ['{:.4f}'.format(x) for x in np.array(zzin['Z'])]
+          models_info['{:d}THZERR'.format(nth)]      = ['{:.4f}'.format(x) for x in np.array(zzin['ZERR'])]
+          models_info['{:d}THZWARN'.format(nth)]     = ['{:d}'.format(x) for x in np.array(zzin['ZWARN'])]
+          models_info['{:d}THDELTACHI2'.format(nth)] = ['{:.1f}'.format(x) for x in np.array(zzin['DELTACHI2'])]
+  
+        cds_model       = make_cds_model((mwave, models))
+        cds_models_info = bk.ColumnDataSource(models_info)
+        
     else:
-        cds_model = None
+        if model is not None:
+          mwave, mflux = model  
+            
+          cds_model    = make_cds_model((mwave, [mflux]))
+          models_info  = None
+          
+        else:
+          cds_model    = None        
+          models_info  = None
+          
     if notebook and ("USER" in os.environ) : 
         username = os.environ['USER']
     else :
@@ -496,7 +566,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
     if cds_model is not None:
         lx = fig.line('plotwave', 'plotflux', source=cds_model, line_color='black')
         model_lines.append(lx)
-
+        
     legend_items = [("data",  data_lines[-1::-1])] #- reversed to get blue as lengend entry
     if cds_model is not None : 
         legend_items.append(("model", model_lines))
@@ -585,9 +655,9 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
     # Ifiberslider's value controls which spectrum is displayed
     # These two widgets call update_plot(), later defined
     slider_end = nspec-1 if nspec > 1 else 0.5 # Slider cannot have start=end
-    ifiberslider = Slider(start=0, end=slider_end, value=0, step=1, title='Spectrum')
+    ifiberslider = Slider(start=0, end=slider_end, value=0, step=1, title='Spectrum (of {})'.format(spectra.num_spectra()))
     smootherslider = Slider(start=0, end=51, value=0, step=1.0, title='Gaussian Sigma Smooth')
-
+    
     #-----
     #- Navigation buttons
     navigation_button_width = 30
@@ -649,6 +719,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
     #- Redshift / wavelength scale widgets
     z1 = np.floor(z*100)/100
     dz = z-z1
+    nmodel_slider = Slider(start=0, end=NBESTFIT, value=0, step=1, title=r'redrock model')
     zslider = Slider(start=0.0, end=4.0, value=z1, step=0.01, title='Redshift rough tuning')
     dzslider = Slider(start=-0.01, end=0.01, value=dz, step=0.0001, title='Redshift fine-tuning')
     dzslider.format = "0[.]0000"
@@ -662,6 +733,119 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
     waveframe_buttons = RadioButtonGroup(
         labels=["Obs", "Rest"], active=0)
 
+    if rrh5 is not None:
+        tmp_info = dict(NTHSPECTYPE = [ cds_models_info.data['0THSPECTYPE'][0] ],
+                        NTHZ = [ cds_models_info.data['0THZ'][0] ],
+                        NTHZERR = [ cds_models_info.data['0THZERR'][0] ],
+                        NTHZWARN = [ cds_models_info.data['0THZWARN'][0] ],
+                        NTHDeltaChi2 = [ cds_models_info.data['0THDELTACHI2'][0] ]
+                       )
+
+        print(tmp_info)
+
+        zzcat_disp_cds = bk.ColumnDataSource(tmp_info, name='zzcat_disp_cds')
+        zzcat_disp_cols = [ TableColumn(field=x, title=x, width=w) for x,w in [ ('NTHSPECTYPE',100), ('NTHZ',50) , ('NTHZERR',50), ('NTHZWARN',50), ('NTHDeltaChi2',100) ] ]
+        zzcat_display = DataTable(source=zzcat_disp_cds, columns=zzcat_disp_cols, index_position=None, selectable=False, width=400) # width=...                                                                                       
+        zzcat_display.height = 2 * zzcat_display.row_height
+
+    else:
+        zzcat_display  = Div(text="Not available ")
+        zzcat_disp_cds = None
+    
+    nmodel_slider_callback = CustomJS(
+        args=dict(
+            spectra = cds_spectra,
+            coaddcam_spec = cds_coaddcam_spec,
+            model = cds_model,
+            targetinfo = cds_targetinfo,
+            modelinfo = cds_models_info,
+            zzcat_disp_cds = zzcat_disp_cds,
+            ifiberslider = ifiberslider,
+            nmodel_slider=nmodel_slider,
+            zslider=zslider,
+            dzslider=dzslider,
+            smootherslider=smootherslider,
+            zdisp_cds = zdisp_cds,
+            waveframe_buttons=waveframe_buttons,
+            line_data=line_data, lines=lines, line_labels=line_labels,
+            zlines=zoom_lines, zline_labels=zoom_line_labels,
+            fig=fig,
+            ),
+        code="""                                                                                                                                                                                                            
+        var z = zslider.value + dzslider.value
+                                                                                                                                      
+        zdisp_cds.data['z_disp']=[ z.toFixed(4) ]                                                                                                                                                                                   
+        zdisp_cds.change.emit()                                                                                                                                                                                                                          
+        smootherslider.value=0
+                                                                                                                                                                                                             
+        var line_restwave = line_data.data['restwave']                                                                                                                                                                              
+        var ifiber = ifiberslider.value                                                                                                                                                                                             
+        var zfit = 0.0                                                                                                                                                                                                              
+        if(targetinfo.data['z'] != undefined) {                                                                                                                                                                                    
+            zfit = targetinfo.data['z'][ifiber]                                                                                                                                                                                    
+        } 
+
+        var waveshift_lines = (waveframe_buttons.active == 0) ? 1+z : 1 ;
+                                                                                                                                                                                                       
+        for(var i=0; i<line_restwave.length; i++) {                                                                                                                                                                
+            lines[i].location = line_restwave[i] * waveshift_lines                                                                                                                                                                 
+            line_labels[i].x = line_restwave[i] * waveshift_lines                                                                                                                                                                  
+            zlines[i].location = line_restwave[i] * waveshift_lines                                                                                                                                                                
+            zline_labels[i].x = line_restwave[i] * waveshift_lines                                                                                                                                                                 
+        }                                                                                                                                                                                                                           
+
+        function shift_plotwave(cds_spec, waveshift) {                                                                                                                                                                                 
+            var data = cds_spec.data                                                                                                                                                                                                   
+            var origwave = data['origwave']                                                                                                                                                                                            
+            var plotwave = data['plotwave']                                                                                                                                                                                            
+            if ( plotwave[0] != origwave[0] * waveshift ) { // Avoid redo calculation if not needed                                                                                                                                    
+                for (var j=0; j<plotwave.length; j++) {                                                                                                                                                                                
+                    plotwave[j] = origwave[j] * waveshift ;                                                                                                                                                                            
+                }                                                                                                                                                                                                                      
+                cds_spec.change.emit()                                                                                                                                                                                                 
+            }                                                                                                                                                                                                                          
+        }  
+
+        function switch_model(nth, ifiber, cds_spec, waveshift) {                                                                                                                                                                    
+            var data        = cds_spec.data                                                                                                                                                                                           
+                                                                                                                                                                                                                                     
+            var  col        = nth + "BESTFIT" + ifiber                                                                                                                                                                                                                                                                                                                                                                                                                 
+            var plotwave    = data['plotwave']                                                                                                                                                                                        
+            var plotflux    = data['plotflux']                                                                                                                                                                                                                                                                                                                                                                                                                              
+            var newflux     = data[col]                                                                                                                                                                                                                                                                                                                                                                                                                      
+            for (var j=0; j<plotwave.length; j++) {                                                                                                                                                                                 
+              plotflux[j]   = newflux[j];                                                                                                                                                                                      
+            }                                                                                                                                                                                                                                                                                                                                                                                                                                                               
+            cds_spec.change.emit()                                                                                                                                                                                                            } 
+
+                                                                                                                                                                                                                            
+        var waveshift_spec = (waveframe_buttons.active == 0) ? 1 : 1/(1+z) ;                                                                                                                                                        
+        for(var i=0; i<spectra.length; i++) {                                                                                                                                                                                      
+            shift_plotwave(spectra[i], waveshift_spec)                                                                                                                                                                             
+        }                                                                                                                                                                                                                           
+        
+        if (coaddcam_spec) shift_plotwave(coaddcam_spec, waveshift_spec)                                                                                                                                                            
+                                                                                                                                                                                                            
+        // Update model wavelength array                                                                                                                                                                                            
+        if(model) {                                                                                                                                                
+            var nth             = nmodel_slider.value            
+            var waveshift_model = (waveframe_buttons.active == 0) ? (1+z)/(1+zfit) : 1/(1+zfit) ;                                                                                                                                  
+                        
+            switch_model(nth, ifiber, model, waveshift_model)                                                                                                                                                         
+        }                                                                                                                                                                                                                          
+        
+        if(modelinfo.data['0THZ'] != undefined) {
+            var nth = nmodel_slider.value
+
+            zzcat_disp_cds.data['NTHSPECTYPE'] = [ modelinfo.data[nth + 'THSPECTYPE'][ifiber] ]
+            zzcat_disp_cds.data['NTHZ'] = [ modelinfo.data[nth + 'THZ'][ifiber] ]
+            zzcat_disp_cds.data['NTHZERR'] = [ modelinfo.data[nth + 'THZERR'][ifiber] ]
+            zzcat_disp_cds.data['NTHZWARN'] = [ modelinfo.data[nth + 'THZWARN'][ifiber] ]
+            zzcat_disp_cds.data['NTHDeltaChi2'] = [ modelinfo.data[nth + 'THDELTACHI2'][ifiber] ]
+            zzcat_disp_cds.change.emit()
+        }
+        """)
+        
     zslider_callback  = CustomJS(
         args=dict(
             spectra = cds_spectra,
@@ -722,6 +906,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
         }
         """)
 
+    nmodel_slider.js_on_change('value', nmodel_slider_callback)
     zslider.js_on_change('value', zslider_callback)
     dzslider.js_on_change('value', zslider_callback)
     waveframe_buttons.js_on_click(zslider_callback)
@@ -737,7 +922,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
             dzslider.value = (z - z1)
         """)
     zreset_button.js_on_event('button_click', zreset_callback)
-
+    
     plotrange_callback = CustomJS(
         args = dict(
             zslider=zslider,
@@ -1093,14 +1278,17 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
             coaddcam_spec = cds_coaddcam_spec,
             model = cds_model,
             targetinfo = cds_targetinfo,
+            modelinfo = cds_models_info,
 #            target_info_div = target_info_div,
 ## BYPASS DIV
             zcat_disp_cds = zcat_disp_cds,
+            zzcat_disp_cds = zzcat_disp_cds,
             targ_disp_cds = targ_disp_cds,
  #           vi_info_div = vi_info_div,
  #           show_prev_vi_select = show_prev_vi_select,
             ifiberslider = ifiberslider,
             smootherslider = smootherslider,
+            nmodel_slider=nmodel_slider,
             zslider=zslider,
             dzslider=dzslider,
             fig = fig,
@@ -1155,24 +1343,53 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
             )
         )
     plot_widget_width = (plot_width+(plot_height//2))//2 - 40
-    plot_widget_set = bk.Column(
+
+    if rrh5 is None:
+      plot_widget_set = bk.Column(
         widgetbox( Div(text="Pipeline fit : ") ),
         widgetbox(zcat_display, width=plot_widget_width),
         bk.Row(
             widgetbox(zslider, width=plot_width//2 - 110),
             widgetbox(z_display, width=120)
         ),
+
         bk.Row(
             widgetbox(dzslider, width=plot_width//2 - 110),
-            widgetbox(zreset_button, width=100)
-        ),
+            widgetbox(zreset_button, width=100),
+          ),
+        
         widgetbox(smootherslider, width=plot_widget_width),
         widgetbox(display_options_group,width=120),
         widgetbox(coaddcam_buttons, width=200),
         widgetbox(waveframe_buttons, width=120),
         widgetbox(lines_button_group, width=200),
         widgetbox(majorline_checkbox, width=120)
-    )
+       )
+
+    else:
+      plot_widget_set = bk.Column(
+ 	widgetbox( Div(text="Pipeline fit : ") ),
+        widgetbox(zcat_display, width=plot_widget_width),
+        widgetbox(nmodel_slider, width=plot_width//2 - 110),
+        widgetbox(zzcat_display, width=plot_widget_width),
+        bk.Row(
+            widgetbox(zslider, width=plot_width//2 - 110),
+            widgetbox(z_display, width=120)
+        ),
+
+        bk.Row(
+            widgetbox(dzslider, width=plot_width//2 - 110),
+            widgetbox(zreset_button, width=100),
+          ),
+
+        widgetbox(smootherslider, width=plot_widget_width),
+        widgetbox(display_options_group,width=120),
+        widgetbox(coaddcam_buttons, width=200),
+        widgetbox(waveframe_buttons, width=120),
+        widgetbox(lines_button_group, width=200),
+        widgetbox(majorline_checkbox, width=120)
+      )    
+      
     if with_vi_widgets :
         plot_widget_set.children.append( widgetbox(Spacer(height=30)) )
         plot_widget_set.children.append( widgetbox(vi_guideline_div, width=plot_widget_width) )

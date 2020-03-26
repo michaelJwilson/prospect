@@ -33,6 +33,17 @@ if (cb_obj == ifiberslider) { // update VI widgets + infos for current spectrum
         zcat_disp_cds.data['DeltaChi2'] = [ targetinfo.data['deltachi2'][ifiber].toFixed(1) ]
         zcat_disp_cds.change.emit()
     }
+
+    if(modelinfo.data['0THZ'] != undefined) {	
+	var nth = nmodel_slider.value
+
+	zzcat_disp_cds.data['NTHSPECTYPE'] = [ modelinfo.data[nth + 'THSPECTYPE'][ifiber] ]
+        zzcat_disp_cds.data['NTHZ'] = [ modelinfo.data[nth + 'THZ'][ifiber] ]
+        zzcat_disp_cds.data['NTHZERR'] = [ modelinfo.data[nth + 'THZERR'][ifiber] ]
+        zzcat_disp_cds.data['NTHZWARN'] = [ modelinfo.data[nth + 'THZWARN'][ifiber] ]
+        zzcat_disp_cds.data['NTHDeltaChi2'] = [ modelinfo.data[nth + 'THDELTACHI2'][ifiber] ]
+        zzcat_disp_cds.change.emit()
+    }
     
     vi_comment_input.value = targetinfo.data['VI_comment'][ifiber]
     vi_name_input.value = (targetinfo.data['VI_scanner'][ifiber]).trim()
@@ -255,7 +266,9 @@ if (coaddcam_spec) {
 
 // update model
 if(model) {
-    var origflux = model.data['origflux'+ifiber]
+    var nth = nmodel_slider.value
+
+    var origflux = model.data[nth + 'BESTFIT'+ifiber]
     if (nsmooth == 0) {
         model.data['plotflux'] = origflux.slice()
     } else {
