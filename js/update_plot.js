@@ -14,7 +14,8 @@ var nsmooth = smootherslider.value
 // }
 
 if (cb_obj == ifiberslider) { // update VI widgets + infos for current spectrum
-
+    nmodel_slider.value=0
+    
     // BYPASS DIV !!!
     // Code can clearly be better written... todo later...
 //    target_info_div.text = targetinfo.data['target_info'][ifiber]

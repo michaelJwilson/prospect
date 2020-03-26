@@ -749,7 +749,7 @@ def plotspectra(spectra, nspec=None, startspec=None, zcatalog=None, model_from_z
         print(tmp_info)
 
         zzcat_disp_cds = bk.ColumnDataSource(tmp_info, name='zzcat_disp_cds')
-        zzcat_disp_cols = [ TableColumn(field=x, title=x, width=w) for x,w in [ ('NTHSPECTYPE',100), ('NTHZ',50) , ('NTHZERR',50), ('NTHZWARN',50), ('NTHDeltaChi2',100) ] ]
+        zzcat_disp_cols = [ TableColumn(field=x, title=x, width=w) for x,w in [ ('NTHSPECTYPE',100), ('NTHZ',50) , ('NTHZERR',50), ('NTHZWARN',100), ('NTHDeltaChi2',100) ] ]
         zzcat_display = DataTable(source=zzcat_disp_cds, columns=zzcat_disp_cols, index_position=None, selectable=False, width=400) # width=...                                                                                       
         zzcat_display.height = 2 * zzcat_display.row_height
 
